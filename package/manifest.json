@@ -1,0 +1,7 @@
+{
+  "name": "UltraMisery",
+  "version_number": "0.1.0",
+  "website_url": "https://github.com/kirklandwaterbot/UltraMisery",
+  "description": "A brutal custom difficulty built on unfinished UKMD: forced enemy buffs, expanded encounters, homing attacks, tougher bosses and optional enemy-versus-enemy battles. Public beta.",
+  "dependencies": ["BepInEx-BepInExPack-5.4.2305"]
+}
