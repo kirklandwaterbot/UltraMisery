@@ -103,6 +103,52 @@ namespace UltraMisery
             return result;
         }
 
+        internal static GameObject InstantiatePowerGreatsword(GameObject prefab, Vector3 position, Quaternion rotation, Power shooter)
+        {
+            // ZweiProjectile is a pair of linked projectiles, not ProjectileSpread.
+            // Work on the spawned copy so the native beam and swing rotation survive.
+            GameObject stock = UltraMiseryState.IsActive && prefab ? GetHomingPrefab() : null;
+            GameObject result = Object.Instantiate(prefab, position, rotation);
+            if (!stock) return result;
+            var replacements = new Dictionary<Projectile, Projectile>();
+            var beams = result.GetComponentsInChildren<ContinuousBeam>(true);
+            var owner = shooter.GetComponent<EnemyIdentifier>();
+            var targetHandle = (ULTRAKILL.Enemy.TargetHandle)typeof(Power).GetField("targetHandle", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(shooter);
+            foreach (var original in result.GetComponentsInChildren<Projectile>(true))
+            {
+                if (original.friendly || original.playerBullet || original.decorative) continue;
+                var orb = CreateOrb(stock, original, original.transform.position, original.transform.rotation);
+                orb.transform.SetParent(original.transform.parent, true);
+                var shot = orb.GetComponent<Projectile>();
+                shot.targetHandle = targetHandle;
+#pragma warning disable CS0612, CS0618
+                if (owner) shot.target = owner.target;
+#pragma warning restore CS0612, CS0618
+                shot.connectedBeams = new List<ContinuousBeam>(original.connectedBeams);
+                // Native OnDisable turns off linked beams; transfer ownership first.
+                original.connectedBeams.Clear();
+                replacements.Add(original, shot);
+            }
+            foreach (var beam in beams)
+                foreach (var pair in replacements)
+                {
+                    if (beam.transform.IsChildOf(pair.Key.transform)) beam.transform.SetParent(pair.Value.transform, true);
+                    if (beam.endPoint == pair.Key.transform) beam.endPoint = pair.Value.transform;
+                    else if (beam.endPoint && beam.endPoint.IsChildOf(pair.Key.transform)) beam.endPoint.SetParent(pair.Value.transform, true);
+                    if (beam.projectile == pair.Key) beam.projectile = pair.Value;
+                    if (beam.endProjectile == pair.Key) beam.endProjectile = pair.Value;
+                }
+            foreach (var pair in replacements)
+            {
+                pair.Key.gameObject.SetActive(false);
+                Object.Destroy(pair.Key.gameObject);
+            }
+            LifestealRules.TagSpawn(result, shooter);
+            if (replacements.Count > 0 && reportedPrefabs.Add("Power greatsword"))
+                Plugin.Log.LogInfo($"Homing orb replacement confirmed for Power greatsword: {replacements.Count} orbs; linked beam preserved.");
+            return result;
+        }
+
         internal static bool UsesHomingShotgun(EnemyType type) => type == EnemyType.Swordsmachine ||
             type == EnemyType.V2 || type == EnemyType.V2Second;
 
@@ -176,7 +222,7 @@ namespace UltraMisery
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
         {
             int replaced = 0;
-            MethodInfo replacement = AccessTools.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.InstantiateSwordsmachinePellet));
+            MethodInfo replacement = WeaponPatchReflection.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.InstantiateSwordsmachinePellet));
             foreach (CodeInstruction instruction in instructions)
             {
                 if (instruction.operand is MethodInfo method && method.DeclaringType == typeof(Object) &&
@@ -210,11 +256,12 @@ namespace UltraMisery
     {
         private static IEnumerable<MethodBase> TargetMethods()
         {
-            yield return AccessTools.Method(typeof(MaliciousFace), "ShootProj");
-            yield return AccessTools.Method(typeof(ZombieProjectiles), "ThrowProjectile");
-            yield return AccessTools.Method(typeof(ZombieProjectiles), "ShootProjectile");
-            yield return AccessTools.Method(typeof(Drone), "Shoot");
-            yield return AccessTools.Method(typeof(Mandalore), "FullBurst");
+            yield return WeaponPatchReflection.Method(typeof(MaliciousFace), "ShootProj");
+            yield return WeaponPatchReflection.Method(typeof(ZombieProjectiles), "ThrowProjectile");
+            yield return WeaponPatchReflection.Method(typeof(ZombieProjectiles), "ShootProjectile");
+            yield return WeaponPatchReflection.Method(typeof(Drone), "Shoot");
+            yield return WeaponPatchReflection.Method(typeof(Mandalore), "FullBurst");
+            yield return WeaponPatchReflection.Method(typeof(Power), "StartDamage", new[] { typeof(bool) });
         }
 
         private static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions, MethodBase __originalMethod)
@@ -222,17 +269,18 @@ namespace UltraMisery
             int replaced = 0;
             int speedWrites = 0;
             bool druidFullAuto = __originalMethod.DeclaringType == typeof(Mandalore) && __originalMethod.Name == "FullBurst";
-            MethodInfo replacement = AccessTools.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.InstantiateOwnedEnemyShot));
+            bool powerGreatsword = __originalMethod.DeclaringType == typeof(Power);
+            MethodInfo replacement = WeaponPatchReflection.Method(typeof(HomingOrbRules), powerGreatsword ? nameof(HomingOrbRules.InstantiatePowerGreatsword) : nameof(HomingOrbRules.InstantiateOwnedEnemyShot));
             foreach (CodeInstruction instruction in instructions)
             {
                 if (druidFullAuto && instruction.opcode == OpCodes.Stfld &&
-                    Equals(instruction.operand, AccessTools.Field(typeof(Projectile), "speed")))
+                    Equals(instruction.operand, typeof(Projectile).GetField("speed")))
                 {
                     instruction.opcode = OpCodes.Ldarg_0;
                     instruction.operand = null;
                     yield return instruction;
                     yield return new CodeInstruction(OpCodes.Call,
-                        AccessTools.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.ConfigureDruidFullAuto)));
+                        WeaponPatchReflection.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.ConfigureDruidFullAuto)));
                     speedWrites++;
                     continue;
                 }
@@ -248,7 +296,7 @@ namespace UltraMisery
                             instruction.opcode = OpCodes.Ldarg_0;
                             instruction.operand = null;
                             yield return instruction;
-                            yield return new CodeInstruction(OpCodes.Call, AccessTools.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.InstantiateDroneShot)));
+                            yield return new CodeInstruction(OpCodes.Call, WeaponPatchReflection.Method(typeof(HomingOrbRules), nameof(HomingOrbRules.InstantiateDroneShot)));
                             replaced++;
                             continue;
                         }
@@ -266,6 +314,8 @@ namespace UltraMisery
                 throw new InvalidOperationException($"No projectile instantiation found in {__originalMethod.DeclaringType.Name}.{__originalMethod.Name}.");
             if (druidFullAuto && (replaced != 1 || speedWrites != 1))
                 throw new InvalidOperationException($"Druid full-auto firing layout changed: spawns={replaced}, speed assignments={speedWrites}.");
+            if (powerGreatsword && replaced != 1)
+                throw new InvalidOperationException($"Power greatsword firing layout changed: spawns={replaced}.");
             Plugin.Log.LogInfo($"Homing spawn hook: {__originalMethod.DeclaringType.Name}.{__originalMethod.Name}, {replaced} instantiation sites.");
         }
     }

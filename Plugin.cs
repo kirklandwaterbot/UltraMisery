@@ -16,7 +16,7 @@ namespace UltraMisery
         public const string PluginName = "UltraMisery";
         // BepInEx 5 parses this value as System.Version. Pre-release suffixes
         // such as "-dev" cause the entire plugin type to be skipped.
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.2.8";
 
         internal static Plugin Instance { get; private set; }
         internal static ManualLogSource Log { get; private set; }
@@ -35,12 +35,15 @@ namespace UltraMisery
             Instance = this;
             Log = Logger;
             harmony = new Harmony(PluginGuid);
+            LevelOverrides.Integration.Install();
             PatchAllSafely();
             AngryCompatibility.Install(harmony);
             HealthbarsCompatibility.Install(harmony);
             StartCoroutine(HealthbarsCompatibility.InstallAfterPluginStartup(harmony));
             SceneManager.sceneLoaded += OnSceneLoaded;
-            Logger.LogInfo("UltraMisery 0.1.0 loaded. Rules are active while this plugin is enabled." );
+            Logger.LogInfo($"UltraMisery {PluginVersion} loaded. Rules are active while UltraMisery is selected.");
+            Logger.LogInfo("Shotgun primary balance: shared 1-second gate inside primary fire; no equip delay.");
+            Logger.LogInfo("Shotgun runtime trace build 028-trace1: observing actual pellet spawns and both clocks.");
         }
 
         private void Update()
@@ -121,6 +124,7 @@ namespace UltraMisery
         private void OnDestroy()
         {
             SceneManager.sceneLoaded -= OnSceneLoaded;
+            LevelOverrides.Integration.Shutdown();
             RestoreGlobalBuffFlags();
             HealthbarsCompatibility.Uninstall(harmony);
             harmony?.UnpatchSelf();
@@ -146,6 +150,11 @@ namespace UltraMisery
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
+            LevelOverrides.Integration.BeforeSceneStart();
+            // A new mission resets recovery; additive/temporary active-scene changes do not.
+            if (mode == LoadSceneMode.Single) ShotgunBalance.Shared.Reset();
+            ShotgunRuntimeTrace.Reset("scene " + scene.name + ", " + mode);
+            bool rejectedSecretScene = MissionRestartRules.OnSceneLoaded(scene, mode);
             MarkedForDeathRules.Reset();
             BoundaryRules.Reset();
             UltraMiseryEnrageAudioGate.Reset();
@@ -154,7 +163,7 @@ namespace UltraMisery
             DifficultySelectionUi.ResetReconciliation();
             nextDifficultyUiSweep = 0f;
 
-            if (UltraMiseryState.IsActive)
+            if (UltraMiseryState.IsActive && !rejectedSecretScene)
             {
                 // Before Start: CheckPoint.Start clones its room templates.
                 RequiredSecretBosses.CaptureScene();
@@ -182,12 +191,16 @@ namespace UltraMisery
             }
 
             IsActive = selected;
+            ShotgunBalance.Shared.Reset();
+            ShotgunRuntimeTrace.Reset("mode " + selected);
             UltraMiseryEnrageAudioGate.Reset();
             StatueEncounterRules.Reset();
             HealthbarsCompatibility.Reset();
             if (selected)
             {
                 StatueEncounterRules.CacheScene(SceneManager.GetActiveScene());
+                if (MissionRestartRules.ShouldRejectLoad(true, MissionRestartRules.CheatsEnabled, SceneHelper.CurrentScene))
+                    MissionRestartRules.Request("UltraMisery selected inside a secret mission");
             }
             if (Plugin.Log != null)
             {
