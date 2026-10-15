@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.8 — local test candidate
+## 0.2.8 â€” local test candidate
 
 - Same-version tuning: regular shotgun primary shots now share a 1-second cooldown, with instant swapping and independent alt-fire. Overheat heat buildup from firing now takes 20 times the base-game effort; spent-heatsink recharge is unchanged.
 - Same-version balance follow-up: all nailgun-family damage is divided by three again (1/12 of base-game damage). Every sawblade variant has twice its firing interval while a player cable is attached to a living enemy; ordinary nail rates stay unchanged. Build, 96 native-hook checks and offline policy/regression tests passed; live gameplay remains unverified.
